@@ -171,3 +171,8 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+/// Map a virtual address to a physical address with flags
+pub fn map_by_token(token: usize, va: VirtPageNum, pa: PhysPageNum, flags: PTEFlags) {
+    let mut page_table = PageTable::from_token(token);
+    page_table.map(VirtAddr::from(va).floor(), pa, flags);
+}

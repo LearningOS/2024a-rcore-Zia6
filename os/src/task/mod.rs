@@ -13,15 +13,15 @@ mod context;
 mod switch;
 #[allow(clippy::module_inception)]
 mod task;
-
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MapPermission;
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
 pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
@@ -78,6 +78,7 @@ impl TaskManager {
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
+        next_task.start_time = get_time_ms();
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
@@ -139,6 +140,9 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
+            if inner.tasks[next].start_time == 0 {
+                inner.tasks[next].start_time = get_time_ms();
+            }
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
@@ -152,6 +156,12 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+    /// Suspend the current 'Running' task and run the next task in task list.
+    pub fn sys_call_times_update(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times_update(syscall_id);
     }
 }
 
@@ -202,3 +212,68 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
 }
+/// update the syscall times
+pub fn sys_call_times_update(syscall_id: usize) {
+    TASK_MANAGER.sys_call_times_update(syscall_id);
+}
+/// get the syscall times
+pub fn current_sys_call_time() -> [u32; 500] {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.tasks[inner.current_task].get_syscall_times()
+}
+
+/// get start times
+pub fn get_start_time() -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.tasks[inner.current_task].start_time
+}
+/// insert a new area in memory set
+pub fn insert_framed_area(start: usize, end: usize, permission: usize) -> Result<(), &'static str>{
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    let mut _start = crate::mm::VirtAddr::from(start);
+    let _end = crate::mm::VirtAddr::from(end);
+    let mut now_page = _start.floor();
+    let end_page = _end.ceil();
+    let mut _permission = MapPermission::empty();
+    if permission & 1 != 0 {
+        _permission |= MapPermission::R;
+    }
+    if permission & 2 != 0 {
+        _permission |= MapPermission::W;
+    }
+    if permission & 4 != 0 {
+        _permission |= MapPermission::X;
+    }
+    while now_page < end_page {
+        if let Some(pte) = inner.tasks[current].memory_set.translate(now_page){
+            if pte.is_valid(){
+                debug!("vpn {:?} is mapped before mapping", now_page);
+                return Err("vpn is mapped before mapping");
+            }
+        }
+        now_page.0 += 1;
+    }
+    inner.tasks[current].insert_framed_area(_start, _end, _permission | MapPermission::U);
+    Ok(())
+}
+/// remove an area in memory set
+pub fn remove_area(start: usize, end: usize)-> Result<(), &'static str>{
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    let _start = crate::mm::VirtAddr::from(start);
+    let _end = crate::mm::VirtAddr::from(end);
+    let mut now_page = _start.floor();
+    let end_page = _end.ceil();
+    while now_page < end_page {
+        if let Some(pte) = inner.tasks[current].memory_set.translate(now_page){
+            if !pte.is_valid(){
+                return Err("vpn is invalid before unmapping");
+            }
+        }
+        now_page.0 += 1;
+    }
+    inner.tasks[current].remove_area(crate::mm::VirtAddr::from(start), crate::mm::VirtAddr::from(end));
+    Ok(())
+}
+

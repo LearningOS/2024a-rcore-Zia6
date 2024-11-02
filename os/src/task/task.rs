@@ -4,6 +4,7 @@ use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
+use crate::config::MAX_SYSCALL_NUM;
 use crate::trap::{trap_handler, TrapContext};
 
 /// The task control block (TCB) of a task.
@@ -28,6 +29,12 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    ///start time
+    pub start_time: usize,
+    
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlock {
@@ -63,6 +70,8 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            start_time: 0,
+            syscall_times: [0; MAX_SYSCALL_NUM],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -95,6 +104,23 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+    /// update the syscall times
+    pub fn syscall_times_update(&mut self, syscall_id: usize) {
+        self.syscall_times[syscall_id] += 1;
+    }
+    /// get the syscall times
+    pub fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        self.syscall_times
+    }
+    /// insert a new area in memory set
+    pub fn insert_framed_area(&mut self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        self.memory_set.insert_framed_area(start, end, permission);
+    }
+
+    /// remove an area in memory set
+    pub fn remove_area(&mut self, start: VirtAddr, end: VirtAddr) {
+        self.memory_set.remove_framed_area(start, end);
     }
 }
 
