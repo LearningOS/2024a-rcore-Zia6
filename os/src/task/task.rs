@@ -2,12 +2,14 @@
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,MapPermission};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use crate::config::MAX_SYSCALL_NUM;
 
 /// Task control block structure
 ///
@@ -68,6 +70,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    ///start time
+    pub start_time: usize,
+    
+    /// The numbers of syscall called by task
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlockInner {
@@ -84,6 +92,23 @@ impl TaskControlBlockInner {
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    /// update the syscall times
+    pub fn syscall_times_update(&mut self, syscall_id: usize) {
+        self.syscall_times[syscall_id] += 1;
+    }
+    /// get the syscall times
+    pub fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        self.syscall_times
+    }
+    /// insert a new area in memory set
+    pub fn insert_framed_area(&mut self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        self.memory_set.insert_framed_area(start, end, permission);
+    }
+
+    /// remove an area in memory set
+    pub fn remove_area(&mut self, start: VirtAddr, end: VirtAddr) {
+        self.memory_set.remove_framed_area(start, end);
     }
 }
 
@@ -118,6 +143,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    start_time: get_time_ms(),
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         };
@@ -191,6 +218,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    start_time: get_time_ms(),
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -236,6 +265,23 @@ impl TaskControlBlock {
             None
         }
     }
+    /// get the syscall times
+    pub fn sys_call_times_update(&self, syscall_id: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.syscall_times_update(syscall_id);
+    }
+
+    /// get the syscall times
+    pub fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner_exclusive_access();
+        inner.get_syscall_times()
+    }
+    /// sys_call_times_update,
+    pub fn get_start_time(&self) -> usize {
+        let inner = self.inner_exclusive_access();
+        inner.start_time
+    }
+    
 }
 
 #[derive(Copy, Clone, PartialEq)]
