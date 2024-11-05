@@ -11,7 +11,7 @@ use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
-
+use crate::config::BIG_STRIDE;
 /// Processor management structure
 pub struct Processor {
     ///The task currently executing on the current processor
@@ -64,6 +64,7 @@ pub fn run_tasks() {
             if task_inner.start_time == 0 {
                 task_inner.start_time = crate::timer::get_time_us();
             }
+            task_inner.stride = task_inner.stride + BIG_STRIDE / task_inner.priority as usize;
             // release coming task_inner manually
             drop(task_inner);
             // release coming task TCB manually

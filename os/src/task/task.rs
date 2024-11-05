@@ -76,6 +76,12 @@ pub struct TaskControlBlockInner {
     
     /// The numbers of syscall called by task
     pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    ///priority
+    pub priority: isize,
+
+    ///stride
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -109,6 +115,10 @@ impl TaskControlBlockInner {
     /// remove an area in memory set
     pub fn remove_area(&mut self, start: VirtAddr, end: VirtAddr) {
         self.memory_set.remove_framed_area(start, end);
+    }
+    /// set the priority
+    pub fn set_priority(&mut self, priority: isize) {
+        self.priority = priority;
     }
 }
 
@@ -145,6 +155,8 @@ impl TaskControlBlock {
                     program_brk: user_sp,
                     start_time: get_time_ms(),
                     syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: 2,
+                    stride: 0,
                 })
             },
         };
@@ -220,6 +232,8 @@ impl TaskControlBlock {
                     program_brk: parent_inner.program_brk,
                     start_time: get_time_ms(),
                     syscall_times: [0; MAX_SYSCALL_NUM],
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                 })
             },
         });
