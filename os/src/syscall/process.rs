@@ -5,11 +5,12 @@ use alloc::sync::Arc;
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str,translated_byte_buffer},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        suspend_current_and_run_next, TaskStatus,current_sys_call_time,insert_framed_area,remove_area,
     },
+    timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -122,7 +123,17 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let now = get_time_us();
+    let time_val = TimeVal {
+        sec: now / 1_000_000,
+        usec: now % 1_000_000,
+    };
+    copy_out(
+        _ts as *mut u8,
+        &time_val as *const TimeVal as *const u8,
+        core::mem::size_of::<TimeVal>(),
+    );
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -133,7 +144,18 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let now = get_time_ms();
+    let task_info = TaskInfo {
+        status: TaskStatus::Running,
+        syscall_times: current_sys_call_time(),
+        time: now - current_task().unwrap().get_start_time(),
+    };
+    copy_out(
+        _ti as *mut u8,
+        &task_info as *const TaskInfo as *const u8,
+        core::mem::size_of::<TaskInfo>(),
+    );
+    0
 }
 
 /// YOUR JOB: Implement mmap.
@@ -142,7 +164,16 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
         "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if (_start % 4096 != 0) || (_port & (!0x7)) != 0 || (_port & 0x7) == 0 {
+        return -1;
+    }
+    let _end = _start + _len;
+    // print!("start:{},len:{},port:{}",_start,_len,_port);
+    if let Err(msg) = insert_framed_area(_start, _end, _port) {
+        error!("123456{}", msg);
+        return -1;
+    }
+    0
 }
 
 /// YOUR JOB: Implement munmap.
@@ -151,7 +182,15 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let _end = _start + _len;
+    if _start % 4096 != 0 {
+        return -1;
+    }
+    if let Err(msg) = remove_area(_start, _end) {
+        error!("{}", msg);
+        return -1;
+    }
+    0
 }
 
 /// change data segment size
@@ -181,4 +220,16 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         current_task().unwrap().pid.0
     );
     -1
+}
+/// copy_out
+pub fn copy_out(dst: *mut u8, src: *const u8, len: usize) {
+    let token = current_user_token();
+    let buffers = translated_byte_buffer(token, dst, len);
+    let mut offset = 0;
+    for buffer in buffers {
+        unsafe {
+            buffer.copy_from_slice(core::slice::from_raw_parts(src.add(offset), buffer.len()));
+        }
+        offset += buffer.len();
+    }
 }

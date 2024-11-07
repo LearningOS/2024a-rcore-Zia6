@@ -21,7 +21,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
-
+use crate::mm::MapPermission;
 use crate::fs::{open_file, OpenFlags};
 use alloc::sync::Arc;
 pub use context::TaskContext;
@@ -119,4 +119,64 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+/// insert a new area in memory set
+pub fn insert_framed_area(start: usize, end: usize, permission: usize) -> Result<(), &'static str>{
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let mut _start = crate::mm::VirtAddr::from(start);
+    let _end = crate::mm::VirtAddr::from(end);
+    let mut now_page = _start.floor();
+    let end_page = _end.ceil();
+    let mut _permission = MapPermission::empty();
+    if permission & 1 != 0 {
+        _permission |= MapPermission::R;
+    }
+    if permission & 2 != 0 {
+        _permission |= MapPermission::W;
+    }
+    if permission & 4 != 0 {
+        _permission |= MapPermission::X;
+    }
+    while now_page < end_page {
+        if let Some(pte) = inner.memory_set.translate(now_page){
+            if pte.is_valid(){
+                debug!("vpn {:?} is mapped before mapping", now_page);
+                return Err("vpn is mapped before mapping");
+            }
+        }
+        now_page.0 += 1;
+    }
+    inner.insert_framed_area(_start, _end, _permission | MapPermission::U);
+    drop(inner);
+    Ok(())
+}
+/// remove an area in memory set
+pub fn remove_area(start: usize, end: usize)-> Result<(), &'static str>{
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let _start = crate::mm::VirtAddr::from(start);
+    let _end = crate::mm::VirtAddr::from(end);
+    let mut now_page = _start.floor();
+    let end_page = _end.ceil();
+    while now_page < end_page {
+        if let Some(pte) = inner.memory_set.translate(now_page){
+            if !pte.is_valid(){
+                return Err("vpn is invalid before unmapping");
+            }
+        }
+        now_page.0 += 1;
+    }
+    inner.remove_area(crate::mm::VirtAddr::from(start), crate::mm::VirtAddr::from(end));
+    Ok(())
+}
+
+/// Update the system call times of the current task
+pub fn sys_call_times_update(syscall_id: usize) {
+    let task = current_task().unwrap();
+    task.sys_call_times_update(syscall_id);
+}
+/// 
+pub fn current_sys_call_time() -> [u32; 500] {
+    current_task().unwrap().get_syscall_times()
 }
