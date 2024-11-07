@@ -210,7 +210,21 @@ pub fn sys_spawn(_path: *const u8) -> isize {
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
+        let task = current_task().unwrap().fork();
+        task.exec(&all_data);
+        let pid = task.getpid();
+        add_task(task);
+        return pid as isize;
+    }
+    // } else {
+    //     println!("No such file or directory: {}", path);
+    //     -1
+    // }
+    return -1;
 }
 
 // YOUR JOB: Set task priority.
@@ -219,7 +233,10 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio < 2 {return -1;}
+    let task = current_task().unwrap();
+    task.inner_exclusive_access().set_priority(_prio);
+    _prio
 }
 /// copy_out
 pub fn copy_out(dst: *mut u8, src: *const u8, len: usize) {
