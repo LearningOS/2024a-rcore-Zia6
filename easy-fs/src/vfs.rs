@@ -247,7 +247,6 @@ impl Inode {
             }
             let last_dirent = DirEntry::empty();
             root_inode.write_at(k * DIRENT_SZ, last_dirent.as_bytes(), &self.block_device);
-            root_inode.size -= DIRENT_SZ as u32;
         });
         let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
         let node = Arc::new(Self::new(
