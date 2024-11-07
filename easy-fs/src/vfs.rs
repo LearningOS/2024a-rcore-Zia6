@@ -30,7 +30,7 @@ impl Inode {
         }
     }
     /// Call a function over a disk inode to read it
-    fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
+    pub fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
         get_block_cache(self.block_id, Arc::clone(&self.block_device))
             .lock()
             .read(self.block_offset, f)
@@ -183,4 +183,93 @@ impl Inode {
         });
         block_cache_sync_all();
     }
+
+    ///linkat inode
+    pub fn linkat(&self, old_name: &str, new_name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        let inode_id = self.read_disk_inode(|disk_inode| self.find_inode_id(old_name, disk_inode));
+        if self.read_disk_inode(|disk_inode| self.find_inode_id(new_name, disk_inode)).is_some() {
+            return -1;
+        }
+        if inode_id.is_none() {
+            return -1;
+        }
+        let inode_id = inode_id.unwrap();
+
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            // increase size
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            let dir_entry = DirEntry::new(new_name, inode_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dir_entry.as_bytes(),
+                &self.block_device,
+            );
+        });
+        // block_cache_sync_all();
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        let node = Arc::new(Self::new(
+            block_id,
+            block_offset,
+            self.fs.clone(),
+            self.block_device.clone(),
+        ));
+        node.modify_disk_inode(|disk_inode| disk_inode.nlink+=1);
+        block_cache_sync_all();
+        0
+    }
+    /// unlinkat inode
+    pub fn unlinkat(&self,name: &str) -> isize{
+        let mut fs = self.fs.lock();
+        let inode = self.read_disk_inode(|disk_inode| self.find_inode_id(name, disk_inode));
+        if inode.is_none() {
+            return -1;
+        }
+        let inode_id = inode.unwrap();
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            let mut k = 0;
+            for i in 0..file_count {
+                assert_eq!(
+                    root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    k = i;
+                    break;
+                }
+            }
+            if k == file_count {
+                return;
+            }
+            let last_dirent = DirEntry::empty();
+            root_inode.write_at(k * DIRENT_SZ, last_dirent.as_bytes(), &self.block_device);
+            root_inode.size -= DIRENT_SZ as u32;
+        });
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        let node = Arc::new(Self::new(
+            block_id,
+            block_offset,
+            self.fs.clone(),
+            self.block_device.clone(),
+        ));
+
+        node.modify_disk_inode(|disk_inode| {
+            disk_inode.nlink -= 1;
+            if disk_inode.nlink == 0 {
+                let size = disk_inode.size;
+                let data_blocks_dealloc = disk_inode.clear_size(&self.block_device);
+                assert!(data_blocks_dealloc.len() == DiskInode::total_blocks(size) as usize);
+                for data_block in data_blocks_dealloc.into_iter() {
+                    fs.dealloc_data(data_block);
+                }
+            }
+        });
+        block_cache_sync_all();
+        0
+    }
+
 }
