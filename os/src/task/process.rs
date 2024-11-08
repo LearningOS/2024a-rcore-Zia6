@@ -49,6 +49,26 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// Available for mutex
+    pub mutex_avail: Vec<usize>,
+    /// Available for semaphore
+    pub semaphore_avail: Vec<usize>,
+
+    /// Allocation for mutex
+    pub mutex_alloc: Vec<Vec<usize>>,
+    /// Allocation for semaphore
+    pub semaphore_alloc: Vec<Vec<usize>>,
+
+    ///Need for mutex
+    pub mutex_need: Vec<Vec<usize>>,
+    ///Need for semaphore
+    pub semaphore_need: Vec<Vec<usize>>,
+
+    ///死锁检测是否开启
+    pub deadlock_detect: bool,
+    ///开始时间
+    pub start_time: usize,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +101,109 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    ///创建线程时同步修改线程下的avail alloc need向量
+    pub fn pro_add_task(&mut self, _tid: usize) {
+        let len_mutex = self.mutex_avail.len();
+        let len_semaphore = self.semaphore_avail.len();
+        if _tid == 0 {
+            self.mutex_alloc.push(vec![0;len_mutex]);
+            self.mutex_need.push(vec![0;len_mutex]);
+            self.semaphore_alloc.push(vec![0;len_semaphore]);
+            self.semaphore_need.push(vec![0;len_semaphore]);
+            return;
+        }
+
+        if _tid < self.mutex_alloc.len(){
+            self.mutex_alloc[_tid] = vec![0;len_mutex];
+            self.mutex_need[_tid]= vec![0;len_mutex];
+            self.semaphore_alloc[_tid] = vec![0;len_semaphore];
+            self.semaphore_need[_tid]= vec![0;len_semaphore];
+        }else {
+            while self.mutex_alloc.len() <= _tid {
+                self.mutex_alloc.push(vec![0; len_mutex]);
+                self.mutex_need.push(vec![0; len_mutex]);
+            }
+            while self.semaphore_alloc.len() <= _tid {
+                self.semaphore_alloc.push(vec![0; len_semaphore]);
+                self.semaphore_need.push(vec![0; len_semaphore]);
+            }
+        }
+    }
+    ///死锁检测
+    pub fn deadlock_detect_mutex(&self) -> isize {
+        let mut work = self.mutex_avail.clone();
+        let mut finish = vec![false; self.mutex_alloc.len()];
+        let mut flag = true;
+        while flag {
+            flag = false;
+            for i in 0..self.mutex_alloc.len() {
+                if !finish[i] {
+                    let mut j = 0;
+                    while j < self.mutex_avail.len() {
+                        if self.mutex_need[i][j] > work[j] {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j == self.mutex_avail.len() {
+                        finish[i] = true;
+                        flag = true;
+                        for j in 0..self.mutex_avail.len() {
+                            work[j] += self.mutex_alloc[i][j];
+                        }
+                    }
+                }
+            }
+        }
+        if finish.iter().all(|&x| x) {
+            0
+        } else {
+            -1
+        }
+    }
+    pub fn deadlock_detect_semaphore(&self) -> isize {
+        let mut work = self.semaphore_avail.clone();
+        let mut finish = vec![false; self.semaphore_alloc.len()];
+        let mut flag = true;
+        while flag {
+            flag = false;
+            for i in 0..self.semaphore_alloc.len() {
+                if !finish[i] {
+                    let mut j = 0;
+                    while j < self.semaphore_avail.len() {
+                        if self.semaphore_need[i][j] > work[j] {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j == self.semaphore_avail.len() {
+                        finish[i] = true;
+                        flag = true;
+                        for j in 0..self.semaphore_avail.len() {
+                            work[j] += self.semaphore_alloc[i][j];
+                        }
+                    }
+                }
+            }
+        }
+        if finish.iter().all(|&x| x) {
+            0
+        } else {
+            -1
+        }
+    }
+
+    pub fn deadlock_detect(&self) -> isize {
+        if self.deadlock_detect {
+            if self.deadlock_detect_mutex() == -1 || self.deadlock_detect_semaphore() == -1 {
+                -1
+            } else {
+                0
+            }
+        } else {
+            0
+        }
     }
 }
 
@@ -119,6 +242,14 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    mutex_avail: Vec::new(),
+                    semaphore_avail: Vec::new(),
+                    mutex_alloc: Vec::new(),
+                    semaphore_alloc: Vec::new(),
+                    mutex_need: Vec::new(),
+                    semaphore_need: Vec::new(),
+                    deadlock_detect: false,
+                    start_time: 0,
                 })
             },
         });
@@ -144,6 +275,7 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+        process_inner.pro_add_task(0);
         drop(process_inner);
         insert_into_pid2process(process.getpid(), Arc::clone(&process));
         // add main thread to scheduler
@@ -245,6 +377,14 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    mutex_avail: parent.mutex_avail.clone(),
+                    semaphore_avail: parent.semaphore_avail.clone(),
+                    mutex_alloc: parent.mutex_alloc.clone(),
+                    semaphore_alloc: parent.semaphore_alloc.clone(),
+                    mutex_need: parent.mutex_need.clone(),
+                    semaphore_need: parent.semaphore_need.clone(),
+                    deadlock_detect: false,
+                    start_time: 0,
                 })
             },
         });
@@ -267,6 +407,7 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.pro_add_task(0);
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
@@ -282,4 +423,6 @@ impl ProcessControlBlock {
     pub fn getpid(&self) -> usize {
         self.pid.0
     }
+
+    
 }
